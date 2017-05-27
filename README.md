@@ -16,9 +16,9 @@ I will add support for other versions later on. If you want to do it yourself he
 2. HANDLE_TABLE structure;
 3. ExpLookupHandleTableEntry;
 4. The DirectoryTableBase.
-4. Some kernel offsets (_KPROCESS::DirectoryTableBase, _EPROCESS::UniqueProcessId, _EPROCESS::ActiveProcessLinks, _EPROCESS::ObjectTable)
+5. Some kernel offsets (_KPROCESS::DirectoryTableBase, _EPROCESS::UniqueProcessId, _EPROCESS::ActiveProcessLinks, _EPROCESS::ObjectTable)
 
-Numers 1, 2 and 4 can be easily found with LiveKd (which you can download [from here](https://technet.microsoft.com/en-us/sysinternals/livekd.aspx)) and the Windows Debugging Tools.
+Numers 1, 2, 4 and 5 can be easily found with LiveKd (which you can download [from here](https://technet.microsoft.com/en-us/sysinternals/livekd.aspx)) and the Windows Debugging Tools.
 
 
 
