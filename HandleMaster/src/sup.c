@@ -50,7 +50,6 @@ BOOL SupFileExists(
     NULL, 0);
 
   if(!NT_SUCCESS(Status)) {
-    RtlSetLastWin32Error(RtlNtStatusToDosError(Status));
     return FALSE;
   }
 
@@ -121,10 +120,8 @@ HANDLE SupCreateFile(
     FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
     NULL, 0);
 
-  if(!NT_SUCCESS(Status)) {
+  if(!NT_SUCCESS(Status))
     FileHandle = INVALID_HANDLE_VALUE;
-    RtlSetLastWin32Error(RtlNtStatusToDosError(Status));
-  }
 
   return FileHandle;
 }
