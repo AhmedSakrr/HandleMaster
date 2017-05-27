@@ -19,7 +19,7 @@ I will add support for other versions later on. If you want to do it yourself he
 
 Numers 1, 2 and 4 can be easily found with LiveKd (which you can download [from here](https://technet.microsoft.com/en-us/sysinternals/livekd.aspx)) and the Windows Debugging Tools.
 
-#### HANDLE_TABLE_ENTRY
+### HANDLE_TABLE_ENTRY
 
 After you've downloaded LiveKd and extracted it to where windbg.exe and kd.exe are located (usually "C:\Program Files (x86)\Windows Kits\<version>\Debuggers\x64"), run LiveKd through cmd.exe and then enter the following:
 
@@ -30,11 +30,12 @@ Output should look as follows:
 ![img1](http://i.imgur.com/oRs1E9y.png)
 
 Then you just need to convert that to a C structure. *cough* https://github.com/MarkHC/windbg_to_c *cough*
-#### HANDLE_TABLE
+
+### HANDLE_TABLE
 
 Can be obtained in the same way as HANDLE_TABLE_ENTRY, just alter the LiveKd command to `dt nt!_HANDLE_TABLE`
 
-#### ExpLookupHandleTableEntry
+### ExpLookupHandleTableEntry
 
 Open up C:\Windows\System32\ntoskrnl.exe on IDA64. Make sure to press 'Yes' when it asks you to download the PDB:
 
@@ -44,7 +45,7 @@ Now press G and enter ExpLookupHandleTableEntry. Press F5 to go to Disassembly v
 
 Just make sure to change any dereferences into calls to `read<ULONGLONG>`.
 
-#### DirectoryTableBase
+### DirectoryTableBase
 
 Back to LiveKd, type `!process 0 0 System` into LiveKd's command line.
 
