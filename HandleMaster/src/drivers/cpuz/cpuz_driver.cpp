@@ -61,22 +61,22 @@ bool cpuz_driver::ensure_loaded()
 bool cpuz_driver::is_loaded()
 {
   if(!deviceHandle_ || deviceHandle_ == INVALID_HANDLE_VALUE) {
-    IO_STATUS_BLOCK ioStatus;
+    IO_STATUS_BLOCK io_status;
     NTSTATUS status;
 
-    UNICODE_STRING    usDevice      = UNICODE_STRING{sizeof(CPUZ_DEVICE_NAME) - sizeof(WCHAR), sizeof(CPUZ_DEVICE_NAME), CPUZ_DEVICE_NAME};
-    OBJECT_ATTRIBUTES objAttributes = OBJECT_ATTRIBUTES{ sizeof(OBJECT_ATTRIBUTES), NULL, &usDevice, 0, NULL, NULL };
+    UNICODE_STRING    device_name = UNICODE_STRING{sizeof(CPUZ_DEVICE_NAME) - sizeof(WCHAR), sizeof(CPUZ_DEVICE_NAME), CPUZ_DEVICE_NAME};
+    OBJECT_ATTRIBUTES obj_attr    = OBJECT_ATTRIBUTES{ sizeof(OBJECT_ATTRIBUTES), NULL, &device_name, 0, NULL, NULL };
 
     status = NtOpenFile(
       &deviceHandle_, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
-      &objAttributes, &ioStatus, 0, OPEN_EXISTING);
+      &obj_attr, &io_status, 0, OPEN_EXISTING);
 
     if(!NT_SUCCESS(status)) {
       ULONG i = 4;
       do {
         status = NtOpenFile(
           &deviceHandle_, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
-          &objAttributes, &ioStatus, 0, OPEN_EXISTING);
+          &obj_attr, &io_status, 0, OPEN_EXISTING);
         Sleep(250);
       } while(!NT_SUCCESS(status) && i--);
     }
@@ -87,29 +87,29 @@ bool cpuz_driver::is_loaded()
 
 bool cpuz_driver::load()
 {
-  HANDLE tempHandle;
-  ULONG ioBytes;
+  HANDLE service, file;
+  ULONG io;
 
   if(!SupFileExists(CPUZ_FILE_NAME)) {
-    tempHandle = SupCreateFile(CPUZ_FILE_NAME, FILE_GENERIC_WRITE, 0, FILE_CREATE);
+    file = SupCreateFile(CPUZ_FILE_NAME, FILE_GENERIC_WRITE, 0, FILE_CREATE);
 
-    if(!WriteFile(tempHandle, CpuzShellcode, sizeof(CpuzShellcode), &ioBytes, nullptr)) {
-      CloseHandle(tempHandle);
+    if(!WriteFile(file, CpuzShellcode, sizeof(CpuzShellcode), &io, nullptr)) {
+      CloseHandle(file);
       return false;
     }
-    CloseHandle(tempHandle);
+    CloseHandle(file);
   }
 
-  if(ScmOpenServiceHandle(&tempHandle, L"cpuz141", SERVICE_STOP | DELETE)) {
-    if(!ScmStopService(tempHandle) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
-      ScmCloseServiceHandle(tempHandle);
+  if(ScmOpenServiceHandle(&service, L"cpuz141", SERVICE_STOP | DELETE)) {
+    if(!ScmStopService(service) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+      ScmCloseServiceHandle(service);
       return false;
     }
-    if(!ScmDeleteService(tempHandle)) {
-      ScmCloseServiceHandle(tempHandle);
+    if(!ScmDeleteService(service)) {
+      ScmCloseServiceHandle(service);
       return false;
     }
-    ScmCloseServiceHandle(tempHandle);
+    ScmCloseServiceHandle(service);
   }
 
   if(!ScmCreateService(
@@ -130,15 +130,15 @@ bool cpuz_driver::load()
 
 bool cpuz_driver::unload()
 {
-  HANDLE tempHandle;
+  HANDLE service;
 
-  if(ScmOpenServiceHandle(&tempHandle, L"cpuz141", SERVICE_STOP | DELETE)) {
-    if(!ScmStopService(tempHandle) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
-      ScmCloseServiceHandle(tempHandle);
+  if(ScmOpenServiceHandle(&service, L"cpuz141", SERVICE_STOP | DELETE)) {
+    if(!ScmStopService(service) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+      ScmCloseServiceHandle(service);
       return false;
     }
-    ScmDeleteService(tempHandle);
-    ScmCloseServiceHandle(tempHandle);
+    ScmDeleteService(service);
+    ScmCloseServiceHandle(service);
 
     return true;
 
@@ -218,7 +218,7 @@ std::uint64_t cpuz_driver::translate_linear_address(std::uint64_t directoryTable
 bool cpuz_driver::read_physical_address(std::uint64_t address, LPVOID buf, size_t len)
 {
   constexpr auto ioctl = 0x9C402420;
-  auto ioBytes = 0ul;
+  auto io = 0ul;
 
   input_read_mem in;
   output out;
@@ -232,7 +232,7 @@ bool cpuz_driver::read_physical_address(std::uint64_t address, LPVOID buf, size_
   in.buffer_high  = HIDWORD(buf);
   in.buffer_low   = LODWORD(buf);
     
-  return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr);
+  return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &io, nullptr);
 }
 
 bool cpuz_driver::read_system_address(LPVOID address, LPVOID buf, size_t len)
@@ -255,7 +255,7 @@ bool cpuz_driver::write_physical_address(std::uint64_t address, LPVOID buf, size
     throw std::runtime_error{ "The CPU-Z driver can only write lengths that are aligned to 4 bytes (4, 8, 12, 16, etc)" };
 
   constexpr auto ioctl = 0x9C402430;
-  auto ioBytes = 0ul;
+  auto io = 0ul;
 
   input_write_mem in;
   output out;
@@ -268,13 +268,13 @@ bool cpuz_driver::write_physical_address(std::uint64_t address, LPVOID buf, size
     in.address_low  = LODWORD(address);
     in.value        = *(std::uint32_t*)buf;
 
-    return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr);
+    return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &io, nullptr);
   } else {
     for(auto i = 0; i < len / 4; i++) {
       in.address_high = HIDWORD(address + 4 * i);
       in.address_low  = LODWORD(address + 4 * i);
       in.value = ((std::uint32_t*)buf)[i];
-      if(!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr))
+      if(!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &io, nullptr))
         return false;
     }
     return true;
@@ -289,9 +289,9 @@ bool cpuz_driver::write_system_address(LPVOID address, LPVOID buf, size_t len)
   // TODO: Check OS build and use the correct DirectoryTablebase. 
   // The one below is for Win7 SP1
   // 
-  const auto DirBase = std::uint64_t{ 0x187000 };
+  constexpr auto sys_dir_base = std::uint64_t{ 0x187000 };
 
-  auto phys = translate_linear_address(DirBase, address);
+  auto phys = translate_linear_address(sys_dir_base, address);
 
   if(phys == 0)
     return false;

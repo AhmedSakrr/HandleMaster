@@ -28,9 +28,9 @@ namespace process
   static std::uint8_t* find_kernel_proc(const char* name)
   {
     static HMODULE ntoskrnl = LoadLibraryW(L"ntoskrnl.exe");
-    static ULONG64 kernelBase = (ULONG64)SupGetKernelBase(NULL);
+    static ULONG64 krnl_base = (ULONG64)SupGetKernelBase(nullptr);
 
-    if(!kernelBase)
+    if(!krnl_base)
       throw std::runtime_error{ "Could not find the system base." };
 
     if(!ntoskrnl)
@@ -40,7 +40,7 @@ namespace process
 
     if(!fn) return nullptr;
 
-    return (uint8_t*)(fn - (std::uint64_t)ntoskrnl + kernelBase);
+    return (uint8_t*)(fn - (std::uint64_t)ntoskrnl + krnl_base);
   }
 
   static process_context find_process_info(std::uint32_t pid)
@@ -66,18 +66,21 @@ namespace process
       auto last_link = cpuz.read_system_address<std::uint64_t>(list_head + sizeof(PVOID));
       auto cur_link  = list_head;
 
+      // Iterate the kernel's linked list of processes
       do {
         auto entry = (std::uint64_t)cur_link - EPROCESS_LINKS;
 
-        auto uniqueProcessId = cpuz.read_system_address<std::uint64_t>(entry + EPROCESS_PID);
+        auto unique_pid = cpuz.read_system_address<std::uint64_t>(entry + EPROCESS_PID);
 
-        if(uniqueProcessId == pid) {
+        // PID is a match
+        if(unique_pid == pid) {
           info.pid          = pid;
           info.dir_base     = cpuz.read_system_address<std::uint64_t>(entry + KPROCESS_DIRBASE);
           info.kernel_entry = entry;
           break;
         }
 
+        // Go to next process
         cur_link = cpuz.read_system_address<std::uint64_t>(cur_link);
       } while(cur_link != last_link);
     }
@@ -192,22 +195,22 @@ namespace process
       throw std::runtime_error{ "Not attached to a process." };
 
     // Grab the handle table
-    auto handleTableAddress = read<PHANDLE_TABLE>(PVOID(cur_context->kernel_entry + EPROCESS_OBJ_TABLE));
-    auto handleTable        = read<HANDLE_TABLE>(handleTableAddress);
+    auto handle_table_addr = read<PHANDLE_TABLE>(PVOID(cur_context->kernel_entry + EPROCESS_OBJ_TABLE));
+    auto handle_table      = read<HANDLE_TABLE>(handle_table_addr);
 
     // Find the entry for the target handle
-    auto entryAddress = ExpLookupHandleTableEntry(&handleTable, (ULONGLONG)handle);
+    auto entry_addr = ExpLookupHandleTableEntry(&handle_table, (ULONGLONG)handle);
 
-    if(!entryAddress)
+    if(!entry_addr)
       return false;
 
     // Read it
-    auto entry = read<HANDLE_TABLE_ENTRY>(entryAddress);
+    auto entry = read<HANDLE_TABLE_ENTRY>(entry_addr);
 
     // Set the access
     entry.GrantedAccess = access_rights;
 
     // Write it back
-    return write<HANDLE_TABLE_ENTRY>(entryAddress, entry);
+    return write<HANDLE_TABLE_ENTRY>(entry_addr, entry);
   }
 }
