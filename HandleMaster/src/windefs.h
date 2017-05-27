@@ -8,6 +8,10 @@
 #include <Windows.h>
 #include <winternl.h>
 
+#ifndef _WIN64
+#error "x64 only please"
+#endif
+
 typedef struct _EPROCESS *PEPROCESS;
 typedef struct _HANDLE_TABLE_ENTRY_INFO *PHANDLE_TABLE_ENTRY_INFO;
 typedef PVOID EX_PUSH_LOCK;
