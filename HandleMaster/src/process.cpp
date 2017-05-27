@@ -12,8 +12,6 @@
 #define EPROCESS_PID       0x180
 #define EPROCESS_LINKS     0x188
 #define EPROCESS_OBJ_TABLE 0x200
-#define EPROCESS_WOW64PEB  0x320
-#define EPROCESS_PEB       0x338
 
 namespace process
 {
@@ -187,22 +185,29 @@ namespace process
 
   bool grant_handle_access(HANDLE handle, ACCESS_MASK access_rights)
   {
+    // 
+    // Make sure we are attached to a process
+    // 
     if(cur_context == nullptr)
       throw std::runtime_error{ "Not attached to a process." };
 
+    // Grab the handle table
     auto handleTableAddress = read<PHANDLE_TABLE>(PVOID(cur_context->kernel_entry + EPROCESS_OBJ_TABLE));
     auto handleTable        = read<HANDLE_TABLE>(handleTableAddress);
-    auto entryAddress       = ExpLookupHandleTableEntry(&handleTable, (ULONGLONG)handle);
+
+    // Find the entry for the target handle
+    auto entryAddress = ExpLookupHandleTableEntry(&handleTable, (ULONGLONG)handle);
 
     if(!entryAddress)
       return false;
 
+    // Read it
     auto entry = read<HANDLE_TABLE_ENTRY>(entryAddress);
 
+    // Set the access
     entry.GrantedAccess = access_rights;
 
-    write<HANDLE_TABLE_ENTRY>(entryAddress, entry);
-
-    return true;
+    // Write it back
+    return write<HANDLE_TABLE_ENTRY>(entryAddress, entry);
   }
 }
